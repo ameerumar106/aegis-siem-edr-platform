@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SIEM Dashboard</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+
+<nav class="navbar">
+  <a href="/" class="brand">&#x1F6E1; SIEM <span>Dashboard</span></a>
+  <a href="/" class="active">Overview</a>
+  <a href="/alerts">Alerts</a>
+  <a href="/logs">Logs</a>
+  <div class="live-badge"><div class="live-dot"></div> Live</div>
+</nav>
+
+<div class="container">
+
+  <div class="stats-grid">
+    <div class="stat-card total">
+      <div class="label">Total Events</div>
+      <div class="value">{{ stats.total_logs }}</div>
+      <div class="sub">all sources</div>
+    </div>
+    <div class="stat-card alerts">
+      <div class="label">Alerts Raised</div>
+      <div class="value">{{ stats.total_alerts }}</div>
+      <div class="sub">active threats</div>
+    </div>
+    <div class="stat-card critical">
+      <div class="label">Critical</div>
+      <div class="value">{{ stats.by_severity.get('CRITICAL', 0) }}</div>
+      <div class="sub">severity level 4</div>
+    </div>
+    <div class="stat-card high">
+      <div class="label">High</div>
+      <div class="value">{{ stats.by_severity.get('HIGH', 0) }}</div>
+      <div class="sub">severity level 3</div>
+    </div>
+    <div class="stat-card medium">
+      <div class="label">Medium</div>
+      <div class="value">{{ stats.by_severity.get('MEDIUM', 0) }}</div>
+      <div class="sub">severity level 2</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Low</div>
+      <div class="value" style="color:#22c55e">{{ stats.by_severity.get('LOW', 0) }}</div>
+      <div class="sub">severity level 1</div>
+    </div>
+  </div>
+
+  <div class="charts-grid">
+    <div class="chart-card">
+      <h3>Events by Severity</h3>
+      <div style="height:200px"><canvas id="chartSeverity"></canvas></div>
+    </div>
+    <div class="chart-card">
+      <h3>Events by Source</h3>
+      <div style="height:200px"><canvas id="chartSource"></canvas></div>
+    </div>
+    <div class="chart-card">
+      <h3>Events by Hour</h3>
+      <div style="height:200px"><canvas id="chartHourly"></canvas></div>
+    </div>
+  </div>
+
+  <div style="display:grid; grid-template-columns: 360px 1fr; gap:16px; margin-bottom:24px;">
+    
+    <div class="table-card">
+      <div class="table-header"><h3>Top Offending IPs</h3></div>
+      <div class="table-wrap">
+        <table style="width: 100%; table-layout: auto;">
+          <thead>
+            <tr>
+              <th style="white-space: nowrap; padding-right: 12px; text-align: left;">IP Address</th>
+              <th style="white-space: nowrap; padding-right: 12px; text-align: left;">Activity</th>
+              <th style="text-align: right; white-space: nowrap;">Events</th>
+            </tr>
+          </thead>
+          <tbody id="topIpList">
+            <tr><td colspan="3" style="color:#8892a4; text-align: center; padding: 15px;">Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    
+    <div class="chart-card">
+      <h3>Live Event Feed</h3>
+      <div class="live-feed" id="liveFeed">
+        <div style="color:#8892a4">Loading feed...</div>
+      </div>
+    </div>
+    
+  </div>
+
+  <div class="table-card">
+    <div class="table-header">
+      <h3>Recent Alerts</h3>
+      <a href="/alerts" style="color:#3b82f6;font-size:12px;text-decoration:none">View all &rarr;</a>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Type</th>
+            <th>Severity</th>
+            <th>Source Host/IP</th>
+            <th>Description</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for alert in stats.get('recent_alerts', []) %}
+          <tr>
+            <td style="color:#8892a4;white-space:nowrap">{{ alert.timestamp }}</td>
+            <td style="font-family:monospace;font-size:12px;color:#3b82f6;">{{ alert.event_type }}</td>
+            <td><span class="badge badge-{{ alert.severity }}">{{ alert.severity }}</span></td>
+            <td style="font-family:monospace;font-size:12px">{{ alert.src_ip }}</td>
+            <td>{{ alert.description[:80] }}{% if alert.description|length > 80 %}...{% endif %}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="5" style="color:#8892a4;text-align:center;padding:24px">No active alerts — run detection telemetry sensors</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<script src="/static/js/charts.js"></script>
+<script src="/static/js/live_feed.js"></script>
+</body>
+</html>

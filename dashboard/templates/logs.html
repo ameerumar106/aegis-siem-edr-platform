@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Logs — SIEM</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+<nav class="navbar">
+  <a href="/" class="brand">&#x1F6E1; SIEM <span>Dashboard</span></a>
+  <a href="/">Overview</a>
+  <a href="/alerts">Alerts</a>
+  <a href="/logs" class="active">Logs</a>
+  <div class="live-badge"><div class="live-dot"></div> Live</div>
+</nav>
+<div class="container">
+
+  <div class="page-title">
+    Log Viewer
+    <span class="sub">{{ logs|length }} entries</span>
+  </div>
+
+  <!-- Filter Bar -->
+  <div class="filter-bar">
+    <a href="/logs" class="{{ 'active' if not severity and not source }}">All</a>
+    <a href="/logs?source=windows"   class="{{ 'active' if source=='windows' }}">Windows</a>
+    <a href="/logs?source=linux"     class="{{ 'active' if source=='linux' }}">Linux</a>
+    <a href="/logs?source=firewall"  class="{{ 'active' if source=='firewall' }}">Firewall</a>
+    <a href="/logs?source=webserver" class="{{ 'active' if source=='webserver' }}">Web Server</a>
+    <a href="/logs?severity=CRITICAL" class="{{ 'active' if severity=='CRITICAL' }}">Critical</a>
+    <a href="/logs?severity=HIGH"     class="{{ 'active' if severity=='HIGH' }}">High</a>
+  </div>
+
+  <div class="table-card">
+    <div class="table-header"><h3>Raw Logs</h3></div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Timestamp</th>
+            <th>Source</th>
+            <th>Type</th>
+            <th>Severity</th>
+            <th>Source IP</th>
+            <th>User</th>
+            <th>Message</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for log in logs %}
+          <tr>
+            <td style="color:#8892a4">{{ log.id }}</td>
+            <td style="color:#8892a4;font-size:12px;white-space:nowrap">{{ log.timestamp }}</td>
+            <td class="src-{{ log.source }}" style="font-weight:600;font-size:12px">{{ log.source }}</td>
+            <td style="font-family:monospace;font-size:12px">{{ log.event_type }}</td>
+            <td><span class="badge badge-{{ log.severity }}">{{ log.severity }}</span></td>
+            <td style="font-family:monospace;font-size:12px">{{ log.src_ip }}</td>
+            <td style="color:#8892a4">{{ log.user }}</td>
+            <td title="{{ log.message }}" style="max-width:300px">{{ log.message[:60] }}{% if log.message|length > 60 %}...{% endif %}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="8" style="color:#8892a4;text-align:center;padding:32px">No logs found. Run <code>python run.py</code> first.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+</body>
+</html>
