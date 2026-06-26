@@ -9,6 +9,12 @@ A high-performance, multi-layered cyber defense platform engineered to combine d
 * **Intelligent Anomaly Detection:** Features a rolling statistical baseline engine utilizing standard deviation ($\mu + 3\sigma$) to catch volumetric traffic spikes without heavy ML dependencies.
 * **Enterprise SOC Escalation:** Implements a low-overhead memory batching buffer to protect SQLite from write-locks, paired with zero-latency webhook streams to Slack channels for immediate incident triage.
 
+
+## 🖥️ Application Interface
+
+![Aegis SIEM EDR Platform](preview.png)
+
+---
 ## 🛠️ Local Deployment
 
 1. Install requirements: `pip install scapy watchdog geoip2`
