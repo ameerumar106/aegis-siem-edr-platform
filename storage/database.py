@@ -1,7 +1,7 @@
 """
 database.py
-SQLite database handler.
-Handles: init, insert logs, insert alerts, all query functions.
+SQLite database handler for the Aegis SIEM & EDR platform.
+Manages transactional insertion abstractions and analytical visualization queries.
 """
 
 import sqlite3
@@ -41,15 +41,19 @@ def insert_log(normalized_dict):
     d = normalized_dict
     conn = get_connection()
     cur  = conn.cursor()
+    
+    # FIXED: Extended to support new network schema vectors safely via dict get defaults
     cur.execute("""
         INSERT INTO logs
             (timestamp, source, event_type, severity, severity_num,
-             src_ip, dst_ip, user, message)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             src_ip, dst_ip, src_port, dst_port, protocol, user, message)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
-        d["timestamp"], d["source"],    d["event_type"],
+        d["timestamp"], d["source"], d["event_type"],
         d["severity"],  d["severity_num"],
-        d["src_ip"],    d["dst_ip"],    d["user"], d["message"]
+        d.get("src_ip", "unknown"), d.get("dst_ip", "unknown"),
+        d.get("src_port"), d.get("dst_port"), d.get("protocol"),
+        d.get("user", "unknown"), d.get("message")
     ))
     log_id = cur.lastrowid
     conn.commit()
@@ -61,17 +65,20 @@ def insert_logs_bulk(normalized_list):
     """Insert many normalized logs at once (faster than one-by-one)."""
     conn = get_connection()
     cur  = conn.cursor()
+    
     rows = [(
-        d["timestamp"], d["source"],    d["event_type"],
+        d["timestamp"], d["source"], d["event_type"],
         d["severity"],  d["severity_num"],
-        d["src_ip"],    d["dst_ip"],    d["user"], d["message"]
+        d.get("src_ip", "unknown"), d.get("dst_ip", "unknown"),
+        d.get("src_port"), d.get("dst_port"), d.get("protocol"),
+        d.get("user", "unknown"), d.get("message")
     ) for d in normalized_list]
 
     cur.executemany("""
         INSERT INTO logs
             (timestamp, source, event_type, severity, severity_num,
-             src_ip, dst_ip, user, message)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             src_ip, dst_ip, src_port, dst_port, protocol, user, message)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, rows)
     conn.commit()
     conn.close()
@@ -86,14 +93,15 @@ def insert_alert(alert_dict):
     cur.execute("""
         INSERT INTO alerts
             (timestamp, alert_type, severity, severity_num,
-             src_ip, description, log_ids)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+             src_ip, description, log_ids, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         d["timestamp"],    d["alert_type"],
         d["severity"],     d["severity_num"],
         d.get("src_ip",  "unknown"),
         d.get("description", ""),
-        d.get("log_ids", "")
+        d.get("log_ids", ""),
+        d.get("status", "OPEN")
     ))
     alert_id = cur.lastrowid
     conn.commit()
@@ -111,6 +119,26 @@ def get_all_logs(limit=500, offset=0):
         ORDER BY timestamp DESC
         LIMIT ? OFFSET ?
     """, (limit, offset))
+    rows = [dict(r) for r in cur.fetchall()]
+    conn.close()
+    return rows
+
+
+def get_recent_logs_by_ip(ip, minutes_back=10):
+    """
+    NEW FEATURE: High-speed window lookup for a specific target IP address.
+    Drives real-time streaming sliding correlation rules.
+    """
+    if ip == "unknown":
+        return []
+    conn = get_connection()
+    cur  = conn.cursor()
+    cur.execute("""
+        SELECT * FROM logs 
+        WHERE src_ip = ? 
+        AND timestamp >= datetime('now', 'localtime', ?)
+        ORDER BY timestamp DESC
+    """, (ip, f"-{minutes_back} minutes"))
     rows = [dict(r) for r in cur.fetchall()]
     conn.close()
     return rows
@@ -153,7 +181,7 @@ def get_all_alerts(limit=200):
 
 
 def get_stats():
-    """Return summary statistics for the dashboard."""
+    """Return summary statistics for the dashboard panels."""
     conn = get_connection()
     cur  = conn.cursor()
 
@@ -195,7 +223,7 @@ def get_stats():
 
 
 def clear_db():
-    """Wipe all data (for testing/reset)."""
+    """Wipe all data safely (for testing/reset transformations)."""
     conn = get_connection()
     cur  = conn.cursor()
     cur.execute("DELETE FROM logs")
@@ -209,7 +237,5 @@ if __name__ == "__main__":
     init_db()
     stats = get_stats()
     print(f"\n── Database Stats ──")
-    print(f"   Total logs  : {stats['total_logs']}")
-    print(f"   Total alerts: {stats['total_alerts']}")
-    print(f"   By severity : {stats['by_severity']}")
-    print(f"   By source   : {stats['by_source']}")
+    print(f"    Total logs  : {stats['total_logs']}")
+    print(f"    Total alerts: {stats['total_alerts']}")

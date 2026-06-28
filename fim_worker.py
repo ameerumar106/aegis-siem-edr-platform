@@ -14,6 +14,10 @@ import urllib.request
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
+# Import our unified real-time pipeline components
+from storage.database import insert_log
+from detection.alert_engine import process_realtime_log
+
 # ─────────────────────────────────────────────────────────────
 # ⚙️ ENVIRONMENT CONTEXT CONFIGURATION PARSER
 # ─────────────────────────────────────────────────────────────
@@ -36,7 +40,6 @@ def load_env_context():
 # Anchor Configuration Assets
 ENV = load_env_context()
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, "storage", "siem.db")
 WEBHOOK_URL = ENV["SLACK_WEBHOOK_URL"]
 
 # Dynamically decouple comma-separated paths and expand user/system macro shortcuts
@@ -66,38 +69,48 @@ def calculate_sha256(file_path):
         return None
 
 # ─────────────────────────────────────────────────────────────
-# 🛰️ CENTRALIZED SIEM ALERT PIPELINE
+# 🛰️ CENTRALIZED SIEM REAL-TIME DISPATCHER
 # ─────────────────────────────────────────────────────────────
-def route_fim_alert(event_type, severity, description, target_file):
+def dispatch_realtime_fim_event(event_type, severity, description):
+    """
+    Transforms filesystem events into unified taxonomy data objects,
+    commits them to storage, and processes correlation logic instantly.
+    """
     current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
+    # Map directly onto our unified database schema blueprint variables
+    normalized_log = {
+        "timestamp": current_time,
+        "source": "host_edr",
+        "event_type": event_type,
+        "severity": severity,
+        "severity_num": {"LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}.get(severity, 2),
+        "src_ip": "127.0.0.1",
+        "dst_ip": "127.0.0.1",
+        "src_port": None,
+        "dst_port": None,
+        "protocol": "LOCAL",
+        "user": "system",
+        "message": description
+    }
+    
     try:
-        cursor.execute("""
-            INSERT INTO logs (timestamp, source, event_type, severity, src_ip, dst_ip, message, user, created_at)
-            VALUES (?, 'host_edr', ?, ?, '127.0.0.1', '127.0.0.1', ?, 'system', ?)
-        """, (current_time, event_type, severity, description, current_time))
+        # Stream into SQL storage layers
+        insert_log(normalized_log)
         
-        cursor.execute("""
-            INSERT INTO alerts (timestamp, event_type, severity, src_ip, description, status, created_at)
-            VALUES (?, ?, ?, 'localhost', ?, 'OPEN', ?)
-        """, (current_time, event_type, severity, description, current_time))
+        # Dispatch to correlation rules matrix on the fly
+        process_realtime_log(normalized_log)
         
-        conn.commit()
-        print(f"[🔥 SYSTEM VIOLATION] [{current_time}] {event_type} -> {target_file}")
     except Exception as e:
-        print(f"[-] Database insertion breakdown: {e}")
-    finally:
-        conn.close()
+        print(f"[-] HIDS Real-time integration pipe fault: {e}")
 
+    # Out-of-band automated notification alerts processing
     if WEBHOOK_URL and not WEBHOOK_URL.startswith("YOUR_"):
         emoji = "🔴" if severity == "CRITICAL" else "🟠"
         payload = {
             "text": f"{emoji} *CRITICAL HOST INTRUSION DETECTED* {emoji}\n"
                     f"• *Alert Type:* `{event_type}`\n"
                     f"• *Severity:* `{severity}`\n"
-                    f"• *Compromised Path:* `{target_file}`\n"
                     f"• *Incident Details:* _{description}_\n"
                     f"Timestamp: {current_time}"
         }
@@ -124,6 +137,7 @@ class RealWorldIntegrityHandler(FileSystemEventHandler):
         count = 0
         for path in TARGET_PATHS:
             if not os.path.exists(path):
+                print(f"[!] Path skipped (Target destination not active/found): {path}")
                 continue
             for root, _, files in os.walk(path):
                 for file in files:
@@ -137,13 +151,15 @@ class RealWorldIntegrityHandler(FileSystemEventHandler):
     def on_created(self, event):
         if event.is_directory: return
         file_path = event.src_path
+        
+        # Sleep transiently to avoid file lock conflicts during write-burst completions
         time.sleep(0.3)
         new_hash = calculate_sha256(file_path)
         self.file_hashes[file_path] = new_hash
         
-        filename = os.path.basename(file_path)
-        msg = f"Suspicious file creation spotted in protected path: '{file_path}'. Potential drop injection point."
-        route_fim_alert("SYSTEM_FILE_INJECTED", "HIGH", msg, filename)
+        msg = f"Suspicious file creation spotted in protected path: '{file_path}'"
+        dispatch_slack_notification = "HIGH"
+        dispatch_realtime_fim_event("SYSTEM_FILE_INJECTED", dispatch_slack_notification, msg)
 
     def on_modified(self, event):
         if event.is_directory: return
@@ -157,30 +173,36 @@ class RealWorldIntegrityHandler(FileSystemEventHandler):
             filename = os.path.basename(file_path)
             
             severity = "CRITICAL" if "hosts" in filename.lower() else "HIGH"
-            msg = f"System profile mutation detected: '{file_path}' has broken baseline cryptographic parity!"
-            route_fim_alert("SYSTEM_CONFIG_MUTATED", severity, msg, filename)
+            msg = f"System profile mutation detected: '{file_path}' has broken cryptographic parity baseline!"
+            dispatch_realtime_fim_event("SYSTEM_CONFIG_MUTATED", severity, msg)
 
     def on_deleted(self, event):
         if event.is_directory: return
         file_path = event.src_path
         if file_path in self.file_hashes:
             del self.file_hashes[file_path]
-            filename = os.path.basename(file_path)
             msg = f"Critical infrastructure asset wiped out of filesystem: '{file_path}'"
-            route_fim_alert("SYSTEM_FILE_DELETED", "HIGH", msg, filename)
+            dispatch_realtime_fim_event("SYSTEM_FILE_DELETED", "HIGH", msg)
 
 if __name__ == "__main__":
     observer = Observer()
     handler = RealWorldIntegrityHandler()
     
+    watched_directories = 0
     for path in TARGET_PATHS:
         if os.path.exists(path):
-            observer.schedule(handler, path=path, recursive=False)
+            observer.schedule(handler, path=path, recursive=True if os.path.isdir(path) else False)
+            watched_directories += 1
             
-    observer.start()
-    try:
-        while True: time.sleep(1)
-    except KeyboardInterrupt:
-        observer.stop()
-        print("\n[-] Host Configuration Monitoring Engine offline.")
-    observer.join()
+    if watched_directories > 0:
+        observer.start()
+        print(f"[+] HIDS Listener thread successfully linked onto {watched_directories} path locations.")
+        try:
+            while True: 
+                time.sleep(1)
+        except KeyboardInterrupt:
+            observer.stop()
+            print("\n[-] Host Configuration Monitoring Engine offline.")
+        observer.join()
+    else:
+        print("[-] Fatal initialization fault: No execution targets mapped successfully. Check target arrays.")

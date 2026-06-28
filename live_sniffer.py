@@ -11,6 +11,8 @@ import datetime
 import sqlite3
 import json
 import urllib.request
+import queue
+import threading
 from collections import defaultdict
 from scapy.all import sniff, IP, TCP, UDP, ICMP
 import geoip2.database
@@ -55,6 +57,9 @@ WINDOW_START_TIME = time.time()
 ROLLING_WINDOW_SIZE = 10  # 10 second tracking slices
 VOLUMETRIC_THRESHOLD = 150  # Hardened baseline alert threshold limit
 
+# Thread-safe local queue to decouple packet parsing from database I/O write locks
+DB_QUEUE = queue.Queue()
+
 # Initialize GeoIP Reader Client
 try:
     GEOIP_READER = geoip2.database.Reader(GEOIP_PATH)
@@ -96,26 +101,41 @@ def dispatch_slack_notification(event_type, severity, summary):
     except Exception:
         pass
 
-def write_security_telemetry(event_type, severity, src_ip, dst_ip, message):
-    current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    try:
-        cursor.execute("""
-            INSERT INTO logs (timestamp, source, event_type, severity, src_ip, dst_ip, message, user, created_at)
-            VALUES (?, 'network_dpi', ?, ?, ?, ?, ?, 'system', ?)
-        """, (current_time, event_type, severity, src_ip, dst_ip, message, current_time))
+def db_writer_worker():
+    """Asynchronous worker that flushes security telemetry data to the database without dropping frames"""
+    while True:
+        item = DB_QUEUE.get()
+        if item is None:
+            break
         
-        cursor.execute("""
-            INSERT INTO alerts (timestamp, event_type, severity, src_ip, description, status, created_at)
-            VALUES (?, ?, ?, ?, ?, 'OPEN', ?)
-        """, (current_time, event_type, severity, src_ip, message, current_time))
+        current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        event_type, severity, src_ip, dst_ip, src_port, dst_port, protocol, message = item
         
-        conn.commit()
-    except Exception as e:
-        print(f"[-] Database ingestion fault: {e}")
-    finally:
-        conn.close()
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        try:
+            # 1. Insert into logs table (uses event_type column natively)
+            cursor.execute("""
+                INSERT INTO logs (timestamp, source, event_type, severity, src_ip, dst_ip, src_port, dst_port, protocol, message, user)
+                VALUES (?, 'firewall', ?, ?, ?, ?, ?, ?, ?, ?, 'system')
+            """, (current_time, event_type, severity, src_ip, dst_ip, src_port, dst_port, protocol, message))
+            
+            # 2. FIXED QUERY: Uses alert_type instead of event_type to match the structural models.py table design exactly
+            cursor.execute("""
+                INSERT INTO alerts (timestamp, alert_type, severity, src_ip, description, status)
+                VALUES (?, ?, ?, ?, ?, 'OPEN')
+            """, (current_time, event_type, severity, src_ip, message))
+            
+            conn.commit()
+        except Exception as e:
+            print(f"[-] Database insertion fault: {e}")
+        finally:
+            conn.close()
+        DB_QUEUE.task_done()
+
+# Start Database Processing Writer Thread
+db_thread = threading.Thread(target=db_writer_worker, daemon=True)
+db_thread.start()
 
 # ─────────────────────────────────────────────────────────────
 # 👁️ PACKET STREAM DECONSTRUCTION WORKER
@@ -128,7 +148,20 @@ def packet_inspection_callback(packet):
 
     src_ip = packet[IP].src
     dst_ip = packet[IP].dst
-    
+    protocol = "IP"
+    src_port, dst_port = None, None
+
+    if packet.haslayer(TCP):
+        protocol = "TCP"
+        src_port = packet[TCP].sport
+        dst_port = packet[TCP].dport
+    elif packet.haslayer(UDP):
+        protocol = "UDP"
+        src_port = packet[UDP].sport
+        dst_port = packet[UDP].dport
+    elif packet.haslayer(ICMP):
+        protocol = "ICMP"
+
     # Track volumetric packet metrics
     current_time = time.time()
     TRAFFIC_TRACKER[src_ip] += 1
@@ -140,19 +173,20 @@ def packet_inspection_callback(packet):
                 location = get_country_iso(ip)
                 description = f"Traffic spike anomaly detected from host {ip} ({location}). Transmitted {count} frame structures in a {ROLLING_WINDOW_SIZE}s window."
                 print(f"[🔥 TRAFFIC SPIKE] {description}")
-                write_security_telemetry("TRAFFIC_VOLUMETRIC_SPIKE", "HIGH", ip, dst_ip, description)
+                
+                DB_QUEUE.put(("TRAFFIC_VOLUMETRIC_SPIKE", "HIGH", ip, dst_ip, src_port, dst_port, protocol, description))
                 dispatch_slack_notification("TRAFFIC_VOLUMETRIC_SPIKE", "HIGH", description)
         TRAFFIC_TRACKER.clear()
         WINDOW_START_TIME = current_time
 
     # Specific Signature Detections
     if packet.haslayer(TCP):
-        flags = packet[TCP].flags
-        if flags == 0x02:  # Pure SYN Packet structure without ACK validation
+        if packet[TCP].flags == 'S':  # Pure SYN Packet structure without ACK validation
             location = get_country_iso(src_ip)
-            description = f"TCP SYN packet flagged from {src_ip} ({location}) Target Port: {packet[TCP].dport}. Potential reconnaissance/port scan sweep active."
-            print(f"[⚠️ SIGNATURE MATCH] Port probe sequence isolated from {src_ip}")
-            write_security_telemetry("PORT_SCAN", "HIGH", src_ip, dst_ip, description)
+            description = f"TCP SYN packet flagged from {src_ip} ({location}) Target Port: {dst_port}. Potential reconnaissance/port scan sweep active."
+            print(f"[⚠️ SIGNATURE MATCH] Port probe sequence isolated from {src_ip} on port {dst_port}")
+            
+            DB_QUEUE.put(("PORT_SCAN", "HIGH", src_ip, dst_ip, src_port, dst_port, protocol, description))
             dispatch_slack_notification("PORT_SCAN", "HIGH", description)
 
 if __name__ == "__main__":
@@ -160,4 +194,6 @@ if __name__ == "__main__":
         sniff(iface=INTERFACE_NAME, prn=packet_inspection_callback, store=False)
     except KeyboardInterrupt:
         print("\n[-] Core Network Telemetry Sensor gracefully stopped.")
-        if GEOIP_READER: GEOIP_READER.close()
+        DB_QUEUE.put(None)  # Signal writer thread to close cleanly
+        if GEOIP_READER: 
+            GEOIP_READER.close()

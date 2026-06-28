@@ -1,29 +1,16 @@
 """
 rules.py
-Detection rules for the SIEM alert engine.
-Each rule is a function that takes a list of normalized logs and returns alerts.
-
-Rules implemented:
-1. Brute Force Detection     - 5+ failed logins from same IP in 10 mins
-2. Account Lockout           - any ACCOUNT_LOCKOUT event
-3. Port Scan Detection       - 4+ different ports hit from same IP
-4. Web Attack Detection      - any WEB_ATTACK or SUSPICIOUS_REQUEST event
-5. Privilege Escalation      - SUDO_CMD or PRIV_LOGON events
-6. Critical Event            - any CRITICAL severity log
-7. New Service Installed     - SERVICE_INSTALL event on Windows
-8. Invalid User Attempts     - 3+ INVALID_USER from same IP
+Real-Time Detection rules for the Aegis SIEM correlation engine.
+Each function evaluates a live incoming log against its context history.
 """
 
 from datetime import datetime, timedelta
-from collections import defaultdict
-
 
 def _parse_ts(ts_str):
     try:
         return datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
     except Exception:
         return datetime.min
-
 
 def _make_alert(alert_type, severity, src_ip, description, log_ids):
     sev_map = {"LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
@@ -35,197 +22,162 @@ def _make_alert(alert_type, severity, src_ip, description, log_ids):
         "src_ip"     : src_ip,
         "description": description,
         "log_ids"    : ",".join(str(i) for i in log_ids),
+        "status"     : "OPEN"
     }
 
+# ── Real-Time Rule 1: Brute Force ─────────────────────────────────────────────
 
-# ── Rule 1: Brute Force ───────────────────────────────────────────────────────
+def evaluate_brute_force(current_log, recent_ip_history, threshold=5, window_minutes=10):
+    """Evaluates if the incoming login failure pushes the IP past the threshold limits."""
+    if current_log.get("event_type") != "FAILED_LOGIN" or current_log.get("src_ip") == "unknown":
+        return None
 
-def rule_brute_force(logs, threshold=5, window_minutes=10):
-    """Detect 5+ failed logins from same IP within 10 minutes."""
-    alerts = []
-    failed = [l for l in logs if l.get("event_type") == "FAILED_LOGIN"]
-
-    by_ip = defaultdict(list)
-    for log in failed:
-        by_ip[log["src_ip"]].append(log)
-
-    for ip, ip_logs in by_ip.items():
-        if ip == "unknown":
-            continue
-        ip_logs.sort(key=lambda l: l["timestamp"])
-        for i, log in enumerate(ip_logs):
-            t_start = _parse_ts(log["timestamp"])
-            t_end   = t_start + timedelta(minutes=window_minutes)
-            window  = [l for l in ip_logs[i:] if _parse_ts(l["timestamp"]) <= t_end]
-            if len(window) >= threshold:
-                ids = [l.get("id", 0) for l in window]
-                alerts.append(_make_alert(
-                    "BRUTE_FORCE", "CRITICAL", ip,
-                    f"Brute force detected: {len(window)} failed logins from {ip} within {window_minutes} minutes",
-                    ids
-                ))
-                break  # one alert per IP
-    return alerts
-
-
-# ── Rule 2: Account Lockout ───────────────────────────────────────────────────
-
-def rule_account_lockout(logs):
-    """Alert on any account lockout event."""
-    alerts = []
-    lockouts = [l for l in logs if l.get("event_type") == "ACCOUNT_LOCKOUT"]
-    for log in lockouts:
-        alerts.append(_make_alert(
-            "ACCOUNT_LOCKOUT", "CRITICAL", log.get("src_ip", "unknown"),
-            f"Account lockout: user '{log.get('user','unknown')}' locked out. {log.get('message','')}",
-            [log.get("id", 0)]
-        ))
-    return alerts
-
-
-# ── Rule 3: Port Scan ─────────────────────────────────────────────────────────
-
-def rule_port_scan(logs, port_threshold=4):
-    """Detect same IP hitting 4+ different ports (firewall blocks)."""
-    alerts = []
-    firewall_blocks = [
-        l for l in logs
-        if l.get("source") == "firewall" and l.get("event_type") == "PORT_SCAN"
+    # Filter out historical failed logins from the sliding time boundary window
+    t_current = _parse_ts(current_log["timestamp"])
+    t_boundary = t_current - timedelta(minutes=window_minutes)
+    
+    window_logs = [
+        l for l in recent_ip_history 
+        if l.get("event_type") == "FAILED_LOGIN" and _parse_ts(l["timestamp"]) >= t_boundary
     ]
+    
+    # Include current log in the evaluation array context
+    window_logs.append(current_log)
 
-    by_ip = defaultdict(set)
-    by_ip_logs = defaultdict(list)
-    for log in firewall_blocks:
-        ip = log.get("src_ip", "unknown")
-        if ip == "unknown":
-            continue
-        msg = log.get("message", "")
-        # extract dst_port from message
-        for part in msg.split():
-            if ":" in part:
-                port = part.split(":")[-1].split(" ")[0].strip("()")
-                by_ip[ip].add(port)
-        by_ip_logs[ip].append(log)
-
-    for ip, ports in by_ip.items():
-        if len(ports) >= port_threshold:
-            ids = [l.get("id", 0) for l in by_ip_logs[ip]]
-            alerts.append(_make_alert(
-                "PORT_SCAN", "HIGH", ip,
-                f"Port scan detected from {ip}: hit {len(ports)} ports — {', '.join(list(ports)[:6])}",
-                ids
-            ))
-    return alerts
-
-
-# ── Rule 4: Web Attack ────────────────────────────────────────────────────────
-
-def rule_web_attack(logs):
-    """Alert on WEB_ATTACK or SUSPICIOUS_REQUEST events."""
-    alerts = []
-    attacks = [
-        l for l in logs
-        if l.get("event_type") in ("WEB_ATTACK", "SUSPICIOUS_REQUEST")
-    ]
-    by_ip = defaultdict(list)
-    for log in attacks:
-        by_ip[log.get("src_ip", "unknown")].append(log)
-
-    for ip, ip_logs in by_ip.items():
-        severity = "CRITICAL" if any(l["event_type"] == "WEB_ATTACK" for l in ip_logs) else "HIGH"
-        ids = [l.get("id", 0) for l in ip_logs]
-        alerts.append(_make_alert(
-            "WEB_ATTACK", severity, ip,
-            f"Web attack from {ip}: {len(ip_logs)} malicious requests detected (SQL injection / path traversal / scanner)",
+    if len(window_logs) >= threshold:
+        ids = [l.get("id", 0) for l in window_logs]
+        return _make_alert(
+            "BRUTE_FORCE", "CRITICAL", current_log["src_ip"],
+            f"Real-time Brute Force: {len(window_logs)} failed logins from {current_log['src_ip']} within {window_minutes} minutes",
             ids
-        ))
-    return alerts
+        )
+    return None
 
+# ── Real-Time Rule 2: Account Lockout ─────────────────────────────────────────
 
-# ── Rule 5: Privilege Escalation ──────────────────────────────────────────────
+def evaluate_account_lockout(current_log, recent_ip_history=None):
+    """Triggers an alert immediately on any streaming account lockout entry."""
+    if current_log.get("event_type") == "ACCOUNT_LOCKOUT":
+        return _make_alert(
+            "ACCOUNT_LOCKOUT", "CRITICAL", current_log.get("src_ip", "unknown"),
+            f"Account Lockout: user '{current_log.get('user','unknown')}' locked out. {current_log.get('message','')}",
+            [current_log.get("id", 0)]
+        )
+    return None
 
-def rule_privilege_escalation(logs):
-    """Alert on sudo commands and privilege logon events."""
-    alerts = []
-    priv_events = [
-        l for l in logs
-        if l.get("event_type") in ("SUDO_CMD", "PRIV_LOGON", "EXPLICIT_CRED")
+# ── Real-Time Rule 3: Port Scan ───────────────────────────────────────────────
+
+def evaluate_port_scan(current_log, recent_ip_history, port_threshold=4, window_minutes=5):
+    """Tracks if an IP address scans multiple discrete destination target ports."""
+    # Process if the log is a firewall block or network discovery probe
+    if current_log.get("event_type") != "PORT_SCAN" and current_log.get("source") != "firewall":
+        return None
+        
+    if current_log.get("src_ip") == "unknown" or current_log.get("dst_port") is None:
+        return None
+
+    t_current = _parse_ts(current_log["timestamp"])
+    t_boundary = t_current - timedelta(minutes=window_minutes)
+
+    # Gather historical target destination ports within our timeline window
+    unique_ports = {current_log["dst_port"]}
+    involved_logs = [current_log]
+
+    for l in recent_ip_history:
+        if _parse_ts(l["timestamp"]) >= t_boundary and l.get("dst_port") is not None:
+            unique_ports.add(l["dst_port"])
+            involved_logs.append(l)
+
+    if len(unique_ports) >= port_threshold:
+        ids = [l.get("id", 0) for l in involved_logs]
+        return _make_alert(
+            "PORT_SCAN", "HIGH", current_log["src_ip"],
+            f"Real-time Port Scan: {current_log['src_ip']} probed {len(unique_ports)} distinct ports over {window_minutes}m.",
+            ids
+        )
+    return None
+
+# ── Real-Time Rule 4: Web Attack ──────────────────────────────────────────────
+
+def evaluate_web_attack(current_log, recent_ip_history=None):
+    """Fires instantly on explicit SQLi, XSS, Path Traversal payload matches."""
+    etype = current_log.get("event_type", "")
+    if etype in ("WEB_ATTACK", "SUSPICIOUS_REQUEST") or etype.startswith("WEB_"):
+        severity = "CRITICAL" if current_log.get("severity") == "CRITICAL" or "ATTACK" in etype else "HIGH"
+        return _make_alert(
+            "WEB_ATTACK", severity, current_log.get("src_ip", "unknown"),
+            f"Web Attack Vector Isolated: {current_log.get('message','')}",
+            [current_log.get("id", 0)]
+        )
+    return None
+
+# ── Real-Time Rule 5: Privilege Escalation ────────────────────────────────────
+
+def evaluate_privilege_escalation(current_log, recent_ip_history=None):
+    if current_log.get("event_type") in ("SUDO_CMD", "PRIV_LOGON", "EXPLICIT_CRED"):
+        return _make_alert(
+            "PRIVILEGE_ESCALATION", "HIGH", current_log.get("src_ip", "unknown"),
+            f"Privilege Escalation Activity: Type {current_log.get('event_type')} — {current_log.get('message','')}",
+            [current_log.get("id", 0)]
+        )
+    return None
+
+# ── Real-Time Rule 6: Critical Catch-All ──────────────────────────────────────
+
+def evaluate_critical_events(current_log, recent_ip_history=None):
+    already_caught = {"ACCOUNT_LOCKOUT", "BRUTE_FORCE", "WEB_ATTACK"}
+    if current_log.get("severity") == "CRITICAL" and current_log.get("event_type") not in already_caught:
+        return _make_alert(
+            "CRITICAL_EVENT", "CRITICAL", current_log.get("src_ip", "unknown"),
+            f"Uncategorized Critical Baseline Exception: {current_log.get('message','')}",
+            [current_log.get("id", 0)]
+        )
+    return None
+
+# ── Real-Time Rule 7: New Windows Service ─────────────────────────────────────
+
+def evaluate_new_service(current_log, recent_ip_history=None):
+    if current_log.get("event_type") == "SERVICE_INSTALL":
+        return _make_alert(
+            "NEW_SERVICE_INSTALLED", "HIGH", current_log.get("src_ip", "unknown"),
+            f"Persistence Vector Spotted: New Windows Service Installation — {current_log.get('message','')}",
+            [current_log.get("id", 0)]
+        )
+    return None
+
+# ── Real-Time Rule 8: Invalid User Attempts ───────────────────────────────────
+
+def evaluate_invalid_users(current_log, recent_ip_history, threshold=3, window_minutes=10):
+    if current_log.get("event_type") != "INVALID_USER" or current_log.get("src_ip") == "unknown":
+        return None
+
+    t_current = _parse_ts(current_log["timestamp"])
+    t_boundary = t_current - timedelta(minutes=window_minutes)
+
+    window_logs = [
+        l for l in recent_ip_history 
+        if l.get("event_type") == "INVALID_USER" and _parse_ts(l["timestamp"]) >= t_boundary
     ]
-    for log in priv_events:
-        alerts.append(_make_alert(
-            "PRIVILEGE_ESCALATION", "HIGH", log.get("src_ip", "unknown"),
-            f"Privilege escalation: {log.get('event_type')} — {log.get('message','')}",
-            [log.get("id", 0)]
-        ))
-    return alerts
+    window_logs.append(current_log)
 
+    if len(window_logs) >= threshold:
+        ids = [l.get("id", 0) for l in window_logs]
+        return _make_alert(
+            "INVALID_USER_ATTEMPTS", "HIGH", current_log["src_ip"],
+            f"Suspicious Auth Activity: {len(window_logs)} invalid target user login attempts from {current_log['src_ip']}",
+            ids
+        )
+    return None
 
-# ── Rule 6: Critical Severity Catch-all ───────────────────────────────────────
+# ── Real-time Registry Hook ───────────────────────────────────────────────────
 
-def rule_critical_events(logs):
-    """Alert on any log with CRITICAL severity not already caught."""
-    already_caught = {"ACCOUNT_LOCKOUT", "BRUTE_FORCE"}
-    alerts = []
-    crits = [
-        l for l in logs
-        if l.get("severity") == "CRITICAL" and l.get("event_type") not in already_caught
-    ]
-    for log in crits:
-        alerts.append(_make_alert(
-            "CRITICAL_EVENT", "CRITICAL", log.get("src_ip", "unknown"),
-            f"Critical event: {log.get('event_type')} — {log.get('message','')}",
-            [log.get("id", 0)]
-        ))
-    return alerts
-
-
-# ── Rule 7: New Service Installed ─────────────────────────────────────────────
-
-def rule_new_service(logs):
-    """Alert when a new Windows service is installed (common malware persistence)."""
-    alerts = []
-    services = [l for l in logs if l.get("event_type") == "SERVICE_INSTALL"]
-    for log in services:
-        alerts.append(_make_alert(
-            "NEW_SERVICE_INSTALLED", "HIGH", log.get("src_ip", "unknown"),
-            f"New service installed on Windows host: {log.get('message','')}",
-            [log.get("id", 0)]
-        ))
-    return alerts
-
-
-# ── Rule 8: Invalid User Attempts ────────────────────────────────────────────
-
-def rule_invalid_users(logs, threshold=3):
-    """Alert on 3+ invalid user login attempts from same IP."""
-    alerts = []
-    invalid = [l for l in logs if l.get("event_type") == "INVALID_USER"]
-    by_ip = defaultdict(list)
-    for log in invalid:
-        by_ip[log.get("src_ip", "unknown")].append(log)
-
-    for ip, ip_logs in by_ip.items():
-        if ip == "unknown":
-            continue
-        if len(ip_logs) >= threshold:
-            ids = [l.get("id", 0) for l in ip_logs]
-            alerts.append(_make_alert(
-                "INVALID_USER_ATTEMPTS", "HIGH", ip,
-                f"Repeated invalid user attempts from {ip}: {len(ip_logs)} attempts with unknown usernames",
-                ids
-            ))
-    return alerts
-
-
-# ── All rules registry ────────────────────────────────────────────────────────
-
-ALL_RULES = [
-    rule_brute_force,
-    rule_account_lockout,
-    rule_port_scan,
-    rule_web_attack,
-    rule_privilege_escalation,
-    rule_critical_events,
-    rule_new_service,
-    rule_invalid_users,
+REALTIME_RULES = [
+    evaluate_brute_force,
+    evaluate_account_lockout,
+    evaluate_port_scan,
+    evaluate_web_attack,
+    evaluate_privilege_escalation,
+    evaluate_critical_events,
+    evaluate_new_service,
+    evaluate_invalid_users,
 ]
