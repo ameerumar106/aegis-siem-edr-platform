@@ -10,7 +10,7 @@ Generates realistic fake security logs simulating:
 import random
 import sys
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config import FAKE_LOG_OUTPUT, FAKE_LOG_COUNT
@@ -20,7 +20,7 @@ from config import FAKE_LOG_OUTPUT, FAKE_LOG_COUNT
 ATTACKER_IPS = [
     "192.168.1.105", "10.0.0.44", "172.16.0.23",
     "45.33.32.156",  "198.51.100.7", "203.0.113.99",
-    "185.220.101.45","91.108.4.10",  "77.88.8.8",
+    "185.220.101.45", "91.108.4.10",  "77.88.8.8",
 ]
 
 INTERNAL_IPS = [
@@ -51,25 +51,21 @@ PORTS = [22, 23, 80, 443, 3306, 5432, 8080, 8443, 21, 25, 3389, 445]
 
 # ── Timestamp helper ─────────────────────────────────────────────────────────
 
-def random_timestamp(hours_back=24):
-    delta = timedelta(
-        hours=random.randint(0, hours_back),
-        minutes=random.randint(0, 59),
-        seconds=random.randint(0, 59),
-    )
-    return (datetime.now() - delta).strftime("%Y-%m-%d %H:%M:%S")
+def random_timestamp(hours_back=0):
+    """Overrides randomized lag delays to supply your exact current clock metrics"""
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 # ── Individual log generators ────────────────────────────────────────────────
 
 def gen_windows_log():
     event_types = [
         ("4625", "FAILED_LOGIN",   "HIGH",   "An account failed to log on"),
-        ("4624", "SUCCESSFUL_LOGIN","LOW",   "An account was successfully logged on"),
-        ("4740", "ACCOUNT_LOCKOUT","CRITICAL","A user account was locked out"),
+        ("4624", "SUCCESSFUL_LOGIN", "LOW",    "An account was successfully logged on"),
+        ("4740", "ACCOUNT_LOCKOUT", "CRITICAL", "A user account was locked out"),
         ("4648", "EXPLICIT_CRED",  "MEDIUM", "Logon attempted using explicit credentials"),
         ("4672", "PRIV_LOGON",     "MEDIUM", "Special privileges assigned to new logon"),
         ("4688", "PROCESS_CREATE", "LOW",    "A new process has been created"),
-        ("7045", "SERVICE_INSTALL","HIGH",   "A new service was installed in the system"),
+        ("7045", "SERVICE_INSTALL", "HIGH",   "A new service was installed in the system"),
     ]
     eid, etype, severity, msg = random.choice(event_types)
     ip   = random.choice(ATTACKER_IPS + INTERNAL_IPS)
@@ -86,7 +82,7 @@ def gen_linux_log():
         ("SSH_SUCCESS",   "LOW",    lambda: f"Accepted password for {random.choice(USERNAMES)} from {random.choice(INTERNAL_IPS)} port {random.randint(1024,65535)} ssh2"),
         ("SUDO_CMD",      "MEDIUM", lambda: f"{random.choice(USERNAMES)} : TTY=pts/0 ; PWD=/home/{random.choice(USERNAMES)} ; USER=root ; COMMAND=/bin/bash"),
         ("INVALID_USER",  "HIGH",   lambda: f"Invalid user {random.choice(USERNAMES)} from {random.choice(ATTACKER_IPS)}"),
-        ("BRUTE_FORCE",   "CRITICAL",lambda: f"message repeated 10 times: Failed password for {random.choice(USERNAMES)} from {random.choice(ATTACKER_IPS)}"),
+        ("BRUTE_FORCE",   "CRITICAL", lambda: f"message repeated 10 times: Failed password for {random.choice(USERNAMES)} from {random.choice(ATTACKER_IPS)}"),
         ("CRON_JOB",      "LOW",    lambda: f"(root) CMD (/usr/lib/update-notifier/apt-check)"),
     ]
     etype, severity, msg_fn = random.choice(event_types)

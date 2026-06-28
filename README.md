@@ -1,13 +1,6 @@
-# AegisGuard: Hybrid SIEM & EDR Security Platform 🛡️
+# Aegis: Hybrid SIEM, EDR & SOAR Security Platform
 
-A high-performance, multi-layered cyber defense platform engineered to combine deep network packet telemetry inspection with real-time host file integrity auditing (HIDS). 
-
-## 🚀 Key Architectural Pillars
-
-* **Network Telemetry Layer (`live_sniffer.py`):** Utilizes Scapy for real-time deep packet inspection (DPI). Implements automated Reverse DNS resolution and offline GeoIP country enrichment via MaxMind.
-* **Host EDR Layer (`fim_worker.py`):** Leverages a cryptographic SHA-256 baseline mapping matrix to monitor critical malware dropzones (`%APPDATA%`) and network configurations (`hosts` file) using event-driven file hooks.
-* **Intelligent Anomaly Detection:** Features a rolling statistical baseline engine utilizing standard deviation ($\mu + 3\sigma$) to catch volumetric traffic spikes without heavy ML dependencies.
-* **Enterprise SOC Escalation:** Implements a low-overhead memory batching buffer to protect SQLite from write-locks, paired with zero-latency webhook streams to Slack channels for immediate incident triage.
+Aegis is a local, multi-threaded **Security Information and Event Management (SIEM)**, **Endpoint Detection and Response (EDR)**, and **Security Orchestration, Automation, and Response (SOAR)** architecture. The application concurrently ingests multi-vector network traffic, enforces file system integrity tracking, and deploys automated local kernel-level firewall countermeasures against active threats.
 
 
 ## 🖥️ Application Interface
@@ -15,12 +8,44 @@ A high-performance, multi-layered cyber defense platform engineered to combine d
 ![Aegis SIEM EDR Platform](preview.png)
 
 ---
-## 🛠️ Local Deployment
 
-1. Install requirements: `pip install scapy watchdog geoip2`
-2. Place your `GeoLite2-Country.mmdb` inside the `storage/` directory.
-3. Boot the sensor stack:
-   ```bash
-   python live_sniffer.py
-   python fim_worker.py
-   python -m dashboard.app
+
+## 🌟 Key Architecture Pillars
+
+- **SIEM Engine:** Real-time deep packet inspection (via Scapy) and multi-threaded structured log parsing (`Windows Event Logs`, `Linux Syslog`, `Firewall Drops`, and `Web Exploit Patterns`).
+- **EDR Component:** Native File Integrity Monitoring (FIM via Watchdog API) guarding critical OS assets like `System32\drivers\etc\hosts`, User Desktops, Application Roaming data, and Windows Startup configurations.
+- **SOAR Automation Loop:** An active incident containment handler that intercepts high-severity alerts (`PORT_SCAN`, `WEB_ATTACK`) and orchestrates automated infrastructure mitigation via administrative **Windows Firewall Rules**.
+
+---
+
+## 🛠️ Tech Stack & Dependencies
+
+- **Backend Architecture:** Python 3.10+ (Concurrently orchestrated using thread-safe structures)
+- **Web UI & Visualization:** Flask, Jinja2 Template Blocks, HTML5/CSS3 Grid Layouts
+- **Storage Layer:** Atomic SQLite Database Engine
+- **Telemetry Sensors:** Scapy (Network Sniffer/DPI), Watchdog (Kernel-level File System Listener)
+- **Active Response Wrapper:** Windows PowerShell Subprocess Layer
+
+---
+
+## 🚀 Operational Verification & Active Mitigation
+
+When an adversary initiates an attack, Aegis closes the incident lifecycle completely without human intervention:
+
+```text
+[ SIEM Network Sensor ] ──> Catching Port Scan Anomaly (192.168.44.112)
+           │
+           ▼
+[ Storage & Pipelines ] ──> Streaming structured log metrics into storage layer
+           │
+           ▼
+[ SOAR Playbook Loop  ] ──> Catching 'Open' High-Severity Threats in SQL Engine
+           │
+           ▼
+[ PowerShell Actions  ] ──> Spawning Administrative Isolation Shells quietly
+           │
+           ▼
+[ Kernel Enforcement  ] ──> New-NetFirewallRule deployed -> Remote Attacker IP Banned
+           │
+           ▼
+[ Dashboard UI View   ] ──> Status field transitions dynamically from "Open" -> "Contained"

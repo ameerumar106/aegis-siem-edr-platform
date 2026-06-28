@@ -22,6 +22,7 @@ from parser.normalizer import normalize
 from storage.database import init_db, insert_log
 from detection.alert_engine import process_realtime_log
 from dashboard.app import create_app
+from soar_engine import monitor_alerts_pipeline
 
 # Configure rigorous system logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -134,7 +135,8 @@ if __name__ == "__main__":
         threading.Thread(target=siem_pipeline_processor, name="PipelineProcessor", daemon=True),
         threading.Thread(target=continuous_background_generator, name="MockTraffic", daemon=True),
         threading.Thread(target=start_sniffer_sensor, name="NetworkSniffer", daemon=True),
-        threading.Thread(target=start_hids_sensor, name="HIDSWorker", daemon=True)
+        threading.Thread(target=start_hids_sensor, name="HIDSWorker", daemon=True),
+        threading.Thread(target=monitor_alerts_pipeline, name="SOARWorker", daemon=True)
     ]
 
     # Boot thread grid
